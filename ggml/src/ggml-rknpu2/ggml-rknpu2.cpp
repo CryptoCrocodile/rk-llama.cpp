@@ -177,13 +177,17 @@ struct ggml_backend_rknpu_context {
             return nullptr;
         }
 
-        rknn_core_mask core_mask;
-        switch(core_id) {
-            case 0: core_mask = RKNN_NPU_CORE_0; break;
-            case 1: core_mask = RKNN_NPU_CORE_1; break;
-            case 2: core_mask = RKNN_NPU_CORE_2; break;
-            default: core_mask = RKNN_NPU_CORE_AUTO; break;
-        }
+        // WORKAROUND: Force single core to avoid RKNPU spinlock recursion bug
+        // See: https://github.com/rockchip-linux/kernel/issues/329
+        // Using multiple cores with 4+ contexts causes kernel panic on driver 0.9.x
+        rknn_core_mask core_mask = RKNN_NPU_CORE_0;
+        // Original multi-core code (disabled due to driver bug):
+        // switch(core_id) {
+        //     case 0: core_mask = RKNN_NPU_CORE_0; break;
+        //     case 1: core_mask = RKNN_NPU_CORE_1; break;
+        //     case 2: core_mask = RKNN_NPU_CORE_2; break;
+        //     default: core_mask = RKNN_NPU_CORE_AUTO; break;
+        // }
 
         int ret = rknn_matmul_set_core_mask(ctx->ctx, core_mask);
         if (ret != RKNN_SUCC) {
@@ -295,6 +299,12 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         const int K = (int)src0->ne[0];
         const int N = (int)src0->ne[1];
 
+        // Quantize M to next power of 2 for context caching
+        // This reduces the number of unique matmul contexts created, which helps
+        // avoid GEM handle exhaustion (EFAULT errno 14) on RKNN SDK 2.3.x
+        // The SDK's matmul can handle M values smaller than the context's M
+        const int M_ctx = rknpu2_calibration::next_power_of_two(M);
+
         const bool is_q4_hadamard = (src0->type == GGML_TYPE_Q4_0);
         const int K_op = is_q4_hadamard ? rknpu2_calibration::next_power_of_two(K) : K;
 
@@ -325,7 +335,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         {
             for (size_t i = 0; i < num_active_segments; ++i) {
                 const auto& seg = active_segments[i];
-                matmul_ctxs[i] = backend_ctx->get_matmul_ctx(M, K_op, seg.size_n, seg.core_id, matmul_type);
+                matmul_ctxs[i] = backend_ctx->get_matmul_ctx(M_ctx, K_op, seg.size_n, seg.core_id, matmul_type);
                 if (!matmul_ctxs[i] || matmul_ctxs[i]->ctx == 0) return GGML_STATUS_FAILED;
             }
         }
@@ -358,9 +368,16 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
                         if (it != backend_ctx->b_mem_handle_cache.end()) {
                             mem_B_segments[i] = it->second;
                         } else {
-                            // SDK 2.3.x fix: Use SDK-managed memory instead of rknn_create_mem_from_fd
-                            // The fd-to-GEM-handle conversion fails on newer kernels with DRM GEM driver
-                            rknn_tensor_mem* mem = rknn_create_mem(matmul_ctx->ctx, segment_size_bytes);
+                            // SDK 2.3.x fix: Use static memory context for B-matrix allocations
+                            // This consolidates GEM handle usage to avoid handle exhaustion (EFAULT errno 14)
+                            // B-matrix is weights (read-only), so using a shared context is safe
+                            auto mem_ctx = get_rknpu_memory_context().get_ctx();
+                            if (mem_ctx == 0) {
+                                fprintf(stderr, "RKNPU2: Memory context not initialized\n");
+                                return GGML_STATUS_FAILED;
+                            }
+                            
+                            rknn_tensor_mem* mem = rknn_create_mem(mem_ctx, segment_size_bytes);
                             if (!mem) {
                                 fprintf(stderr, "RKNPU2: Failed to allocate %zu bytes for B-matrix segment\n", segment_size_bytes);
                                 return GGML_STATUS_FAILED;
@@ -370,7 +387,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
                             void* src_ptr = (char*)src0_buf_ctx->dma_buf.virt_addr + total_offset;
                             memcpy(mem->virt_addr, src_ptr, segment_size_bytes);
                             
-                            auto deleter = [ctx = matmul_ctx->ctx](rknn_tensor_mem* m) { if (m) rknn_destroy_mem(ctx, m); };
+                            auto deleter = [mem_ctx](rknn_tensor_mem* m) { if (m) rknn_destroy_mem(mem_ctx, m); };
                             mem_B_segments[i] = std::shared_ptr<rknn_tensor_mem>(mem, deleter);
                             backend_ctx->b_mem_handle_cache[cache_key] = mem_B_segments[i];
                         }
@@ -388,7 +405,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         std::vector<float> scales_A(M);
         float scale_B = 1.0f;
         {
-            auto cache_key = std::make_tuple(M, K, (int)w_type);
+            auto cache_key = std::make_tuple(M_ctx, K, (int)w_type);
             auto& matmul_ctx_0 = matmul_ctxs[0];
 
             mem_A_shared = get_or_create_npu_buffer(backend_ctx, matmul_ctx_0->ctx, matmul_ctx_0->io_attr.A.size, cache_key, backend_ctx->a_buffer_cache);
@@ -484,7 +501,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         {            
             for (size_t i = 0; i < num_active_segments; i++) {
                 auto& matmul_ctx = matmul_ctxs[i];
-                auto cache_key = std::make_tuple(M, active_segments[i].size_n, active_segments[i].core_id);
+                auto cache_key = std::make_tuple(M_ctx, active_segments[i].size_n, active_segments[i].core_id);
                 mem_C_segments[i] = get_or_create_npu_buffer(backend_ctx, matmul_ctx->ctx, matmul_ctx->io_attr.C.size, cache_key, backend_ctx->c_buffer_cache);
                 if (!mem_C_segments[i]) return GGML_STATUS_FAILED;
                 RKNN_CHECK(rknn_matmul_set_io_mem(matmul_ctx->ctx, mem_C_segments[i].get(), &matmul_ctx->io_attr.C), "set_io_mem C");
