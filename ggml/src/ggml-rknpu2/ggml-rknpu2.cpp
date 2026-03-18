@@ -358,8 +358,18 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
                         if (it != backend_ctx->b_mem_handle_cache.end()) {
                             mem_B_segments[i] = it->second;
                         } else {
-                            rknn_tensor_mem* mem = rknn_create_mem_from_fd(matmul_ctx->ctx, src0_buf_ctx->dma_buf.fd, src0_buf_ctx->dma_buf.virt_addr, segment_size_bytes, total_offset);
-                            if (!mem) return GGML_STATUS_FAILED;
+                            // SDK 2.3.x fix: Use SDK-managed memory instead of rknn_create_mem_from_fd
+                            // The fd-to-GEM-handle conversion fails on newer kernels with DRM GEM driver
+                            rknn_tensor_mem* mem = rknn_create_mem(matmul_ctx->ctx, segment_size_bytes);
+                            if (!mem) {
+                                fprintf(stderr, "RKNPU2: Failed to allocate %zu bytes for B-matrix segment\n", segment_size_bytes);
+                                return GGML_STATUS_FAILED;
+                            }
+                            
+                            // Copy weight data from DMA buffer to SDK-managed memory
+                            void* src_ptr = (char*)src0_buf_ctx->dma_buf.virt_addr + total_offset;
+                            memcpy(mem->virt_addr, src_ptr, segment_size_bytes);
+                            
                             auto deleter = [ctx = matmul_ctx->ctx](rknn_tensor_mem* m) { if (m) rknn_destroy_mem(ctx, m); };
                             mem_B_segments[i] = std::shared_ptr<rknn_tensor_mem>(mem, deleter);
                             backend_ctx->b_mem_handle_cache[cache_key] = mem_B_segments[i];

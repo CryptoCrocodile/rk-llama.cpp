@@ -16,29 +16,25 @@ All notable changes to this fork will be documented in this file.
 - Updated GGML backend API to version 2
 - `ggml_backend_buffer_i` now has 9 fields
 - `ggml_backend_i` now has 14 fields
+- **DMA heap allocation** - Now tries CMA heap first, falls back to system heap
+- **B-matrix allocation** - Uses SDK-managed memory (`rknn_create_mem`) instead of
+  external fd wrapping (`rknn_create_mem_from_fd`) for better SDK 2.3.x compatibility
 
 ### Fixed
 - RKNPU2 backend struct compatibility with upstream API changes
 - Backend registration for NPU device discovery
 
+### Requirements
+- **RKNN Runtime:** v2.3.0+ from [airockchip/rknn-llm](https://github.com/airockchip/rknn-llm)
+- **Kernel driver:** Matching NPU driver version 0.9.8+
+
 ### Known Issues
-- **RKNN SDK version mismatch**: Bundled `librknnrt.so` may be outdated
-  - Symptoms: "failed to convert fd to handle", "failed to submit!, op name: MatMul"
-  - **Runtime fix**: Update librknnrt.so to v2.3.2+ from [airockchip/rknn-llm](https://github.com/airockchip/rknn-llm)
-  - **Kernel driver fix**: Also requires updated NPU kernel driver from `rknn-llm/rknpu-driver/`
-  
-  ```bash
-  # 1. Update runtime library
-  cp ~/rknn-llm/examples/multimodal_model_demo/deploy/3rdparty/librknnrt/Linux/librknn_api/aarch64/librknnrt.so \
-     ~/rk-llama-src/ggml/src/ggml-rknpu2/libs/
-  
-  # 2. Install kernel driver (requires sudo + reboot)
-  cd ~/rknn-llm/rknpu-driver
-  tar xjf rknpu_driver_0.9.8_20241009.tar.bz2
-  cd rknpu_driver_0.9.8
-  sudo ./install.sh  # Follow driver-specific instructions
-  sudo reboot
-  ```
+- **SDK 2.3.x GEM handle allocation fails during inference** - Memory allocation
+  works during model load but fails during inference with "failed to allocate handle,
+  errno: 14". Root cause under investigation - appears to be driver/SDK state issue
+  when matmul contexts are destroyed and recreated with different batch sizes.
+- NPU workloads may cause board instability on some configurations
+- Recommend disabling auto-suspend: `sudo systemctl mask sleep.target suspend.target`
 
 ---
 

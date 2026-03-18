@@ -32,10 +32,20 @@ DmaBuffer alloc(size_t size) {
     DmaBuffer buffer;
     buffer.size = size;
 
-    const char* path = "/dev/dma_heap/system";
-    int dma_heap_fd = open(path, O_RDWR);
+    // Try CMA heap first for NPU compatibility with DRM GEM handles
+    // Fall back to system heap if CMA is not available
+    const char* paths[] = {"/dev/dma_heap/cma", "/dev/dma_heap/system"};
+    int dma_heap_fd = -1;
+    
+    for (const char* path : paths) {
+        dma_heap_fd = open(path, O_RDWR);
+        if (dma_heap_fd >= 0) {
+            break;
+        }
+    }
+    
     if (dma_heap_fd < 0) {
-        fprintf(stderr, "RKNPU_DMA_ALLOC: Failed to open %s: %s\n", path, strerror(errno));
+        fprintf(stderr, "RKNPU_DMA_ALLOC: Failed to open any DMA heap: %s\n", strerror(errno));
         return buffer;
     }
 
