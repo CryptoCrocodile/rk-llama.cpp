@@ -1,14 +1,12 @@
-ARG UBUNTU_VERSION=25.10
+ARG UBUNTU_VERSION=26.04
 
 FROM ubuntu:$UBUNTU_VERSION AS build
-
-# Ref: https://vulkan.lunarg.com/doc/sdk/latest/linux/getting_started.html
 
 # Install build tools
 RUN apt update && apt install -y git build-essential cmake wget xz-utils
 
-# Install cURL and Vulkan SDK dependencies
-RUN apt install -y libcurl4-openssl-dev curl \
+# Install SSL and Vulkan SDK dependencies
+RUN apt install -y libssl-dev curl \
     libxcb-xinput0 libxcb-xinerama0 libxcb-cursor-dev libvulkan-dev glslc
 
 # Build it
@@ -35,6 +33,7 @@ FROM ubuntu:$UBUNTU_VERSION AS base
 
 RUN apt-get update \
     && apt-get install -y libgomp1 curl libvulkan1 mesa-vulkan-drivers \
+    libglvnd0 libgl1 libglx0 libegl1 libgles2 \
     && apt autoremove -y \
     && apt clean -y \
     && rm -rf /tmp/* /var/tmp/* \
@@ -52,10 +51,13 @@ WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y \
+    build-essential \
     git \
-    python3 \
+    python3.13 \
+    python3.13-dev \
     python3-pip \
     python3-wheel \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.13 100 \
     && pip install --break-system-packages --upgrade setuptools \
     && pip install --break-system-packages -r requirements.txt \
     && apt autoremove -y \
@@ -69,7 +71,7 @@ ENTRYPOINT ["/app/tools.sh"]
 ### Light, CLI only
 FROM base AS light
 
-COPY --from=build /app/full/llama-cli /app
+COPY --from=build /app/full/llama-cli /app/full/llama-completion /app
 
 WORKDIR /app
 
