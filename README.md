@@ -2,6 +2,37 @@
 
 ![llama](https://user-images.githubusercontent.com/1991296/230134379-7181e485-c521-4d23-a0d6-f7b3b61ba524.png)
 
+> **🚀 rk-llama.cpp Fork - Rockchip RK3588 NPU Support**
+>
+> This is a fork of [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) with **RKNPU2 backend** for Rockchip RK3588/RK3588S NPU acceleration.
+>
+> ### Fork Status
+> - **Upstream sync:** March 2026 (includes commit `f211220a`)
+> - **Branch:** `qwen3-support`
+> - **New architectures:** Qwen3.5-MoE (`qwen35moe`) support added
+>
+> ### RKNPU2 Backend
+> - Hardware acceleration via Rockchip NPU (6 TOPS INT8)
+> - Supports RK3588, RK3588S, RK3576 SoCs
+> - MoE CPU-pinning available (`--cpu-moe` flag)
+>
+> ### SDK Requirements
+> - **RKNN Runtime:** v2.3.0+ from [airockchip/rknn-llm](https://github.com/airockchip/rknn-llm)
+> - **Known Issue:** Older bundled `librknnrt.so` causes "failed to submit" errors
+> - **Fix:** Update to latest runtime from rknn-llm releases
+>
+> ### Quick Start (Rock 5C / RK3588)
+> ```bash
+> # Build with RKNPU2 backend
+> cmake -B build-npu -DGGML_RKNPU2=ON
+> cmake --build build-npu -j$(nproc)
+>
+> # Run with NPU acceleration
+> ./build-npu/bin/llama-cli -m model.gguf --n-gpu-layers 99
+> ```
+
+---
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/ggml-org/llama.cpp)](https://github.com/ggml-org/llama.cpp/releases)
 [![Server](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml/badge.svg)](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml)
