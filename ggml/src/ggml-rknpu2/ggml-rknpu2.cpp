@@ -17,6 +17,7 @@
 #include <chrono>
 #include <cassert>
 #include <cstring>
+#include <cstdlib>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -154,6 +155,7 @@ struct rknpu_matmul_context {
 struct ggml_backend_rknpu_context {
     std::string name;
     std::mutex mutex;
+    rknn_core_mask core_mask = RKNN_NPU_CORE_0;  // Selected via RKNN_CORE_MASK env var
 
     // RKNN matmul contexts cache
     std::unordered_map<std::tuple<int, int, int, int, int>, std::shared_ptr<rknpu_matmul_context>, TupleHasher> matmul_ctx_cache;
@@ -177,20 +179,28 @@ struct ggml_backend_rknpu_context {
             return nullptr;
         }
 
-        // Map core_id to the appropriate single-core mask
-        // core_id 0 -> RKNN_NPU_CORE_0 (mask 1)
-        // core_id 1 -> RKNN_NPU_CORE_1 (mask 2)
-        // core_id 2 -> RKNN_NPU_CORE_2 (mask 4)
-        // This allows each matrix segment to run on a different NPU core
-        rknn_core_mask core_mask;
-        switch (core_id) {
-            case 0: core_mask = RKNN_NPU_CORE_0; break;
-            case 1: core_mask = RKNN_NPU_CORE_1; break;
-            case 2: core_mask = RKNN_NPU_CORE_2; break;
-            default: core_mask = RKNN_NPU_CORE_0; break;
+        // Determine which core mask to use
+        // If RKNN_CORE_MASK was set to a specific core (not AUTO), use it for all operations
+        // Otherwise, map core_id to the appropriate single-core mask for load balancing
+        rknn_core_mask selected_core_mask;
+        if (this->core_mask != RKNN_NPU_CORE_AUTO) {
+            // Use the user-specified core mask
+            selected_core_mask = this->core_mask;
+        } else {
+            // Map core_id to the appropriate single-core mask for load balancing
+            // core_id 0 -> RKNN_NPU_CORE_0 (mask 1)
+            // core_id 1 -> RKNN_NPU_CORE_1 (mask 2)
+            // core_id 2 -> RKNN_NPU_CORE_2 (mask 4)
+            // This allows each matrix segment to run on a different NPU core
+            switch (core_id) {
+                case 0: selected_core_mask = RKNN_NPU_CORE_0; break;
+                case 1: selected_core_mask = RKNN_NPU_CORE_1; break;
+                case 2: selected_core_mask = RKNN_NPU_CORE_2; break;
+                default: selected_core_mask = RKNN_NPU_CORE_0; break;
+            }
         }
 
-        int ret = rknn_matmul_set_core_mask(ctx->ctx, core_mask);
+        int ret = rknn_matmul_set_core_mask(ctx->ctx, selected_core_mask);
         if (ret != RKNN_SUCC) {
             // Handle error - fall back to core 0
             rknn_matmul_set_core_mask(ctx->ctx, RKNN_NPU_CORE_0);
@@ -216,7 +226,10 @@ struct rknpu_memory_context {
 
         rknn_matmul_io_attr dummy_io_attr;
         int ret = rknn_matmul_create(&mem_ctx, &dummy_info, &dummy_io_attr);
-        if (ret < 0) mem_ctx = 0;
+        if (ret < 0) {
+            fprintf(stderr, "RKNPU2: Failed to create memory context (ret=%d). NPU backend will be unavailable.\n", ret);
+            mem_ctx = 0;
+        }
     }
 
     ~rknpu_memory_context() {
@@ -234,6 +247,18 @@ struct rknpu_memory_context {
 static rknpu_memory_context & get_rknpu_memory_context() {
     static rknpu_memory_context g_mem_ctx;
     return g_mem_ctx;
+}
+
+// Parse RKNN_CORE_MASK environment variable
+static rknn_core_mask parse_core_mask_env() {
+    const char* env = getenv("RKNN_CORE_MASK");
+    if (!env) return RKNN_NPU_CORE_AUTO;
+    if (strcmp(env, "0") == 0) return RKNN_NPU_CORE_0;
+    if (strcmp(env, "1") == 0) return RKNN_NPU_CORE_1;
+    if (strcmp(env, "2") == 0) return RKNN_NPU_CORE_2;
+    if (strcmp(env, "auto") == 0) return RKNN_NPU_CORE_AUTO;
+    fprintf(stderr, "RKNPU2: Unknown RKNN_CORE_MASK '%s', defaulting to AUTO\n", env);
+    return RKNN_NPU_CORE_AUTO;
 }
 
 
@@ -389,6 +414,8 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
                             
                             // Copy weight data from DMA buffer to SDK-managed memory
                             void* src_ptr = (char*)src0_buf_ctx->dma_buf.virt_addr + total_offset;
+                            GGML_ASSERT(total_offset + segment_size_bytes <= src0_buf_ctx->dma_buf.size &&
+                                "RKNPU2: B-matrix memcpy would exceed DMA buffer bounds");
                             memcpy(mem->virt_addr, src_ptr, segment_size_bytes);
                             
                             auto deleter = [mem_ctx](rknn_tensor_mem* m) { if (m) rknn_destroy_mem(mem_ctx, m); };
@@ -516,12 +543,19 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         // ========== 5. Running operation ==========
         // ==========================================
         {
+            std::atomic<bool> had_error{false};
+            int error_code = 0;
             #pragma omp parallel for num_threads(num_active_segments)
             for (size_t i = 0; i < num_active_segments; i++) {
                 int ret = rknn_matmul_run(matmul_ctxs[i]->ctx);
                 if (ret != RKNN_SUCC) {
-                    // Handle error
+                    had_error = true;
+                    error_code = ret;
+                    fprintf(stderr, "RKNPU2: rknn_matmul_run failed for segment %zu, ret=%d\n", i, ret);
                 }
+            }
+            if (had_error) {
+                return GGML_STATUS_FAILED;
             }
         }
 
@@ -1020,10 +1054,18 @@ static ggml_backend_t ggml_backend_rknpu_device_init_backend(ggml_backend_dev_t 
     UNUSED(dev);
     UNUSED(params);
 
-    // TODO: Make device selection dynamic (e.g., from params or env var)
-    if (!rknpu2_configuration::Rknpu2ConfigManager::get_instance().select_device("RK3588")) return NULL;
+    // Parse RKNN_DEVICE environment variable for device selection
+    const char* device_name = getenv("RKNN_DEVICE");
+    if (!device_name) device_name = "RK3588";
+
+    if (!rknpu2_configuration::Rknpu2ConfigManager::get_instance().select_device(device_name)) {
+        fprintf(stderr, "RKNPU2: Failed to select device '%s'\n", device_name);
+        return NULL;
+    }
 
     ggml_backend_rknpu_context * ctx = new ggml_backend_rknpu_context();
+    ctx->core_mask = parse_core_mask_env();
+    fprintf(stderr, "RKNPU2: Using device '%s' with core_mask=%d\n", device_name, ctx->core_mask);
     
     static const struct ggml_backend_i rknpu_backend_interface = {
         /* .get_name           = */ ggml_backend_rknpu_name,
