@@ -39,6 +39,25 @@ make -j8
 ./build/bin/llama-cli -m ~/Projects/LFM2-8B-A1B-Q4_0.gguf --cpu-moe
 ```
 
+## Environment Variables
+
+The following environment variables can be used to customize NPU behavior:
+
+| Variable | Values | Default | Description |
+|----------|--------|---------|-------------|
+| `RKNN_DEVICE` | Device name (e.g., "RK3588") | "RK3588" | Select the Rockchip device |
+| `RKNN_CORE_MASK` | "0", "1", "2", "auto" | "auto" | NPU core affinity mask |
+| `RKNN_SPLIT_FACTOR` | 1-16 | 1 | Split factor for IOVA allocation (helps with fragmentation) |
+
+Examples:
+```sh
+# Use specific NPU core
+RKNN_CORE_MASK=1 ./build/bin/llama-cli -m model.gguf
+
+# Reduce IOVA allocation size for large models
+RKNN_SPLIT_FACTOR=4 ./build/bin/llama-cli -m Qwen3.5-9B-Q8_0.gguf
+```
+
 ## Quantizations
 
 ### Weights
