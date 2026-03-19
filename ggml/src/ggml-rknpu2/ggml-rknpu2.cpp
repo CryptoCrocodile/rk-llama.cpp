@@ -84,27 +84,30 @@ struct MatrixSegment {
 };
 
 // Split B-matrix into segments
-static std::vector<MatrixSegment> compute_matrix_segments(int N, int num_cores, int alignment) {
+// split_factor: multiplies number of segments to reduce IOVA allocation size per segment
+// Each segment is assigned to a core via round-robin (i % num_cores)
+static std::vector<MatrixSegment> compute_matrix_segments(int N, int num_cores, int alignment, int split_factor = 1) {
     std::vector<MatrixSegment> segments;
 
-    int base_segment_size = (N / num_cores / alignment) * alignment;
-    int remaining = N - (base_segment_size * num_cores);
-    
+    int total_segments = num_cores * split_factor;
+    int base_segment_size = (N / total_segments / alignment) * alignment;
+    int remaining = N - (base_segment_size * total_segments);
+
     int offset = 0;
-    for (int i = 0; i < num_cores; i++) {
+    for (int i = 0; i < total_segments; i++) {
         MatrixSegment seg;
         seg.offset_n = offset;
         seg.size_n = base_segment_size;
-        seg.core_id = i;
-        
+        seg.core_id = i % num_cores;  // Round-robin core assignment
+
         if (i < remaining / alignment) {
             seg.size_n += alignment;
         }
-        
+
         offset += seg.size_n;
         segments.push_back(seg);
     }
-    
+
     return segments;
 }
 
@@ -156,6 +159,7 @@ struct ggml_backend_rknpu_context {
     std::string name;
     std::mutex mutex;
     rknn_core_mask core_mask = RKNN_NPU_CORE_0;  // Selected via RKNN_CORE_MASK env var
+    int split_factor = 1;  // Selected via RKNN_SPLIT_FACTOR env var
 
     // RKNN matmul contexts cache
     std::unordered_map<std::tuple<int, int, int, int, int>, std::shared_ptr<rknpu_matmul_context>, TupleHasher> matmul_ctx_cache;
@@ -261,6 +265,17 @@ static rknn_core_mask parse_core_mask_env() {
     return RKNN_NPU_CORE_AUTO;
 }
 
+// Parse RKNN_SPLIT_FACTOR environment variable
+// Splits each core's segments into split_factor pieces to reduce IOVA allocation size
+static int parse_split_factor_env() {
+    const char* env = getenv("RKNN_SPLIT_FACTOR");
+    if (!env) return 1;
+    int val = atoi(env);
+    if (val < 1) val = 1;
+    if (val > 16) val = 16;  // Cap at 16 to avoid excessive overhead
+    return val;
+}
+
 
 //
 // Backend
@@ -341,7 +356,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         const rknn_matmul_type matmul_type = op_support->mm_type;
         const int alignment = op_support->n_align;
 
-        auto all_segments = compute_matrix_segments(N, config.core_count, alignment);
+        auto all_segments = compute_matrix_segments(N, config.core_count, alignment, backend_ctx->split_factor);
 
         std::vector<MatrixSegment> active_segments;
         for (const auto& seg : all_segments) {
@@ -1065,7 +1080,8 @@ static ggml_backend_t ggml_backend_rknpu_device_init_backend(ggml_backend_dev_t 
 
     ggml_backend_rknpu_context * ctx = new ggml_backend_rknpu_context();
     ctx->core_mask = parse_core_mask_env();
-    fprintf(stderr, "RKNPU2: Using device '%s' with core_mask=%d\n", device_name, ctx->core_mask);
+    ctx->split_factor = parse_split_factor_env();
+    fprintf(stderr, "RKNPU2: Using device '%s' with core_mask=%d, split_factor=%d\n", device_name, ctx->core_mask, ctx->split_factor);
     
     static const struct ggml_backend_i rknpu_backend_interface = {
         /* .get_name           = */ ggml_backend_rknpu_name,
