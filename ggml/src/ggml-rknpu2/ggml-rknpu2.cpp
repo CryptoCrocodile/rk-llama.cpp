@@ -177,21 +177,23 @@ struct ggml_backend_rknpu_context {
             return nullptr;
         }
 
-        // WORKAROUND: Force single core to avoid RKNPU spinlock recursion bug
-        // See: https://github.com/rockchip-linux/kernel/issues/329
-        // Using multiple cores with 4+ contexts causes kernel panic on driver 0.9.x
-        rknn_core_mask core_mask = RKNN_NPU_CORE_0;
-        // Original multi-core code (disabled due to driver bug):
-        // switch(core_id) {
-        //     case 0: core_mask = RKNN_NPU_CORE_0; break;
-        //     case 1: core_mask = RKNN_NPU_CORE_1; break;
-        //     case 2: core_mask = RKNN_NPU_CORE_2; break;
-        //     default: core_mask = RKNN_NPU_CORE_AUTO; break;
-        // }
+        // Map core_id to the appropriate single-core mask
+        // core_id 0 -> RKNN_NPU_CORE_0 (mask 1)
+        // core_id 1 -> RKNN_NPU_CORE_1 (mask 2)
+        // core_id 2 -> RKNN_NPU_CORE_2 (mask 4)
+        // This allows each matrix segment to run on a different NPU core
+        rknn_core_mask core_mask;
+        switch (core_id) {
+            case 0: core_mask = RKNN_NPU_CORE_0; break;
+            case 1: core_mask = RKNN_NPU_CORE_1; break;
+            case 2: core_mask = RKNN_NPU_CORE_2; break;
+            default: core_mask = RKNN_NPU_CORE_0; break;
+        }
 
         int ret = rknn_matmul_set_core_mask(ctx->ctx, core_mask);
         if (ret != RKNN_SUCC) {
-            // Handle error
+            // Handle error - fall back to core 0
+            rknn_matmul_set_core_mask(ctx->ctx, RKNN_NPU_CORE_0);
         }
 
         matmul_ctx_cache[key] = ctx;
@@ -303,7 +305,9 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         // This reduces the number of unique matmul contexts created, which helps
         // avoid GEM handle exhaustion (EFAULT errno 14) on RKNN SDK 2.3.x
         // The SDK's matmul can handle M values smaller than the context's M
-        const int M_ctx = rknpu2_calibration::next_power_of_two(M);
+        // Use actual M instead of rounding to power of 2
+        // Rounding to next power of 2 causes padding overhead for small M values
+        const int M_ctx = M;
 
         const bool is_q4_hadamard = (src0->type == GGML_TYPE_Q4_0);
         const int K_op = is_q4_hadamard ? rknpu2_calibration::next_power_of_two(K) : K;
@@ -511,7 +515,7 @@ static enum ggml_status ggml_backend_rknpu_graph_compute(ggml_backend_t backend,
         // ==========================================
         // ========== 5. Running operation ==========
         // ==========================================
-        {            
+        {
             #pragma omp parallel for num_threads(num_active_segments)
             for (size_t i = 0; i < num_active_segments; i++) {
                 int ret = rknn_matmul_run(matmul_ctxs[i]->ctx);

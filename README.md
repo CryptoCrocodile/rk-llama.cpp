@@ -13,8 +13,16 @@
 >
 > ### RKNPU2 Backend
 > - Hardware acceleration via Rockchip NPU (6 TOPS INT8)
+> - **Multi-core NPU support:** All 3 NPU cores can be used for matrix multiplication (M,K,N) segmentation
 > - Supports RK3588, RK3588S, RK3576 SoCs
 > - MoE CPU-pinning available (`--cpu-moe` flag)
+>
+> ### ⚠️ OS Compatibility Note
+> - **Recommended:** [Armbian](https://www.armbian.com/) for Rock 5C - provides stable NPU driver support
+> - **Known Issues on RadxaOS:** Kernel 6.1.84-vendor-rk35xx has NPU stability issues including:
+>   - Spinlock recursion bug in RKNPU 0.9.x with 4+ contexts in auto core mode ([ref](https://github.com/rockchip-linux/kernel/issues/329))
+>   - Kernel panic issues with NPU operations
+> - If experiencing instability, consider switching to Armbian for better NPU support
 >
 > ### SDK Requirements
 > - **RKNN Runtime:** v2.3.0+ from [airockchip/rknn-llm](https://github.com/airockchip/rknn-llm)
