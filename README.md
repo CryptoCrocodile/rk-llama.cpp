@@ -41,6 +41,9 @@
 
 ---
 
+### Upstream Sync
+This fork syncs from two upstreams: [ggml-org/llama.cpp](https://github.com/ggml-org/llama.cpp) (core) and [InvisiOfficial/rk-llama.cpp](https://github.com/InvisiOfficial/rk-llama.cpp) (Rockchip NPU patches). See [docs/sync-workflow.md](docs/sync-workflow.md) for the dual-upstream sync workflow.
+
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Release](https://img.shields.io/github/v/release/ggml-org/llama.cpp)](https://github.com/ggml-org/llama.cpp/releases)
 [![Server](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml/badge.svg)](https://github.com/ggml-org/llama.cpp/actions/workflows/server.yml)

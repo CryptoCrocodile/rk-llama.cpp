@@ -189,3 +189,5 @@ Maintainers reserve the right to decline review or close pull requests for any r
 The Github issues, PRs and discussions contain a lot of information that can be useful to get familiar with the codebase. For convenience, some of the more important information is referenced from Github projects:
 
 https://github.com/ggml-org/llama.cpp/projects
+
+For the dual-upstream sync workflow (ggml + InvisiOfficial), see [docs/sync-workflow.md](docs/sync-workflow.md).

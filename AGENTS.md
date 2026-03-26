@@ -1,4 +1,12 @@
-# Instructions for llama.cpp
+# Instructions for rk-llama.cpp — AI Agent Guidelines
+
+> [!IMPORTANT]
+> This fork uses a **dual-upstream sync system** managed by `./scripts/sync-dual-upstream.sh`.
+> See [docs/sync-workflow.md](docs/sync-workflow.md) for the full sync workflow and remote policy.
+
+---
+
+## llama.cpp AI Usage Policy
 
 > [!IMPORTANT]
 > This project does **not** accept pull requests that are fully or predominantly AI-generated. AI tools may be utilized solely in an assistive capacity.
